@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 
 from taskw.fields import (
     ChoiceField,
@@ -39,6 +40,7 @@ class TaskRc(dict):
 
     """
 
+    rcdir = None
     UDA_TYPE_MAP = {
         'date': DateField,
         'duration': DurationField,
@@ -48,16 +50,31 @@ class TaskRc(dict):
 
     def __init__(self, path=None, overrides=None):
         self.overrides = overrides if overrides else {}
+        binary_path = shutil.which("task")
+        share_rc_path = None
+        if binary_path is not None:
+            binary_path = os.path.realpath(binary_path) # Normalizes any potential symlinks.
+            prefix = os.path.dirname(os.path.dirname(binary_path)) # $prefix/bin/task → $prefix
+            share_rc_path = os.path.join(prefix, "share", "doc", "task", "rc") # $prefix/share/doc/task/rc contains additional files.
+
+        self.fallback_prefixes = list(filter(None, [
+            share_rc_path
+        ]))
+
         if path:
             self.path = os.path.normpath(
                 os.path.expanduser(
                     path
                 )
             )
+            if not self.rcdir:
+                TaskRc.rcdir = os.path.dirname(os.path.realpath(self.path))
+                self.fallback_prefixes.append(TaskRc.rcdir)
             config = self._read(self.path)
         else:
             self.path = None
             config = {}
+
         super(TaskRc, self).__init__(config)
 
     def _add_to_tree(self, config, key, value):
@@ -92,6 +109,28 @@ class TaskRc(dict):
 
     def _read(self, path):
         config = {}
+
+        if not os.path.exists(path):
+            # include path may be given relative to dir of rcfile
+            oldpath = path
+            tries = []
+            for fallback_prefix in self.fallback_prefixes:
+                path = os.path.join(fallback_prefix, oldpath)
+                if not os.path.exists(path):
+                    tries.append(path)
+                    logger.warn(
+                        "tried %s and %s with no success",
+                        oldpath, path
+                    )
+                else:
+                    break
+            if len(tries) == self.fallback_prefixes:
+                logger.error(
+                    "failed to find a fallback prefix for %s",
+                    oldpath
+                )
+                raise FileNotFoundError
+
         with open(path, 'r') as config_file:
             for raw_line in config_file.readlines():
                 line = sanitize(raw_line)
